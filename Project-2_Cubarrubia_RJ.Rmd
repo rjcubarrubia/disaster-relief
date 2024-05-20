@@ -1,0 +1,2646 @@
+---
+title: "DS 6030 Project Pt. 2"
+author: "RJ Cubarrubia"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(error = TRUE,        # Keep compiling upon error
+                      collapse = FALSE,    # collapse by default
+                      echo = TRUE,         # echo code by default
+                      comment = "#>",    # change comment character
+                      fig.width = 5.5,     # set figure width
+                      fig.align = "center",# set figure position
+                      out.width = "49%", # set width of displayed images
+                      warning = FALSE,     # do not show R warnings
+                      message = FALSE)     # do not show R messages
+```
+
+```{r, message = FALSE}
+library(tidyverse)
+library(caret)
+library(ROCR)
+library(kableExtra)
+library(class)
+```
+
+## Intro  
+
+After a catastrophic earthquake in 2010, rescue workers in Haiti rushed to aid displaced people who were using blue tarps as makeshift shelters. High resolution imagery was collected via aircraft with the hopes that a the images could be searched for blue tarps. If the blue tarps could be spotted, potential survivors could be identified and rescue workers and resources could be directly sent their way. But with thousands of images a day, aid workers weren't able to pore over all the pixels and communicate their findings to their fellow rescue workers on the ground in time. In came data-mining algorithms and predictive modeling — if the models could scan the images and identify the pixels with blue tarps well enough, the aid and rescue workers might be able to find survivors before it was too late.  
+
+This project involves training and test data sets with actual data collected from relief efforts. First, we'll be wrangling and exploring the training and test data. Then, we'll build many models, fit them to the training data and evaluate their performance with the test data. Finally, we'll sum up our results, compare the models and see how effective we were at aiding survivors of a devastating natural disaster.     
+
+
+## Data Wrangling and EDA  
+
+### Training Data  
+
+Let's start with our training data set. 
+
+```{r}
+haiti.train <- read.csv('HaitiPixels.csv', row.names = NULL)
+```
+
+```{r}
+nrow(haiti.train)
+ncol(haiti.train)
+```
+
+```{r}
+table(haiti.train$Class)
+```
+
+```{r}
+2022 / nrow(haiti.train)
+```
+
+```{r}
+set.seed(710)
+
+haiti.train.rows_shuffled <- sample(nrow(haiti.train))
+haiti.train <- haiti.train[haiti.train.rows_shuffled, ]
+```
+
+```{r}
+haiti.train$isbluetarp <- ifelse(haiti.train$Class == 'Blue Tarp', 1, 0)
+```
+
+```{r, message = FALSE}
+haiti.train$isbluetarp <- as.factor(haiti.train$isbluetarp)
+```
+
+```{r}
+levels(haiti.train$isbluetarp)
+```
+
+```{r}
+levels(haiti.train$isbluetarp) = c('False', 'True')
+```
+
+```{r}
+levels(haiti.train$isbluetarp)
+```
+
+```{r}
+haiti.train$isbluetarp <- factor(haiti.train$isbluetarp, 
+                           levels = c('True', 'False'))
+```
+
+```{r}
+levels(haiti.train$isbluetarp)
+```
+
+```{r}
+sum(is.na(haiti.train))
+```
+
+```{r}
+haiti.train <- subset(haiti.train, select = -c(Class))
+```
+
+Looking at our training data, we have 63241 total observations. Our "Class" column has five different classes. Our class type of interest, "Blue Tarp", only accounts for about 3.2% of the observations. The other columns — "Red", "Blue" and "Green" — are our predictors. Since each of these is essential in determining overall pixel color, they'll all be used in our models. I created a new column, "isbluetarp", that labels "True" if the observation is a "Blue Tarp" and "False" if it's not. Since we're interested in only identifying blue tarps, we're dealing with a one-vs-rest type of classification for our models. We have no NaN values in our data frame. Since the data frame is ordered by classification (each class is grouped together in chunks), I shuffled the data so we don't violate our normality assumption that our error terms are uncorrelated with each other (just to be safe). Finally, I've removed the "Class" column since it's no longer important; we only needed the column to identify blue tarps from the rest and we're uninterested in the specific class labels of the other objects.   
+
+Let's take a look at the distributions of RGB in our training set.    
+
+```{r}
+haiti.train %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Our distributions are very different from normal and while the ranges are the same, the curves hardly overlap.  
+
+Let's compare the distributions of RGB values of blue tarps and the rest.  
+
+```{r}
+filter(haiti.train, isbluetarp == 'True') %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB for Blue Tarps (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+filter(haiti.train, isbluetarp == 'False') %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB for Other Objects (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = isbluetarp, y = Red)) + 
+  geom_boxplot(col = 'dark red') +
+  labs(x = 'Blue Tarp', 
+       y = 'Red Value') + 
+  ggtitle('Box Plot of Red Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = isbluetarp, y = Green)) + 
+  geom_boxplot(col = 'dark green') +
+  labs(x = 'Class', 
+       y = 'Green Value') + 
+  ggtitle('Box Plot of Green Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = isbluetarp, y = Blue)) + 
+  geom_boxplot(col = 'dark blue') +
+  labs(x = 'Class', 
+       y = 'Blue Value') + 
+  ggtitle('Box Plot of Blue Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Unsurprisingly, blue tarps have a high density of high Blue values. They surprisingly have a high density of mid-range Red values. The other objects have a high density of high Red values and a high density of low Blue values. The distribution of Green values never hits the density peaks of Red or Blue values for either blue tarps or the other objects. Blue tarps have a pretty distinct distribution in their boxplots, with RGB values having pretty narrow inter-quartile ranges. Their Red values are generally lower than the Green values, which are lower than the Blue values. The other objects have predictably wide IQR's across their RGB values, especially with Red values, but their Blue values have a comparably smaller IQR to the other colors with generally lower values.  
+
+Let's check out some scatterplots to see how separable the blue tarps are from the other objects.  
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = Red, y = Green)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Red Value', 
+       y = 'Green Value') + 
+  ggtitle('Scatter Plot of Green Values vs. Red Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = Red, y = Blue)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Red Value', 
+       y = 'Blue Value') + 
+  ggtitle('Scatter Plot of Blue Values vs. Red Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+haiti.train %>%
+ggplot(aes(x = Green, y = Blue)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Green Value', 
+       y = 'Blue Value') + 
+  ggtitle('Scatter Plot of Blue Values vs. Green Values (Training)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Our predictors all seem correlated. It also seems blue tarps are pretty clearly separable from the other objects. The separation appears somewhat close to linear but not quite. This suggests the more flexible models will likely have better performance.  
+
+
+### Training Set
+
+Now let's move on to our test data, which is quite large and in many different files. We have three reference images — two that are 831 pixels by 636 pixels and one that is 965 pixels by 826 pixels. These pictures individually contain 528516 pixels and 797090 pixels, respectively. Combined, these three pictures contain 1854122 pixels total.   
+
+Since the each raw data file contains either entirely blue tarps or entirely other objects, I'll start with the blue tarp files. One of the blue tarp files has a duplicate, with one version containing metadata as well as the complete data and the other only containing "B1", "B2" and "B3" values. These likely match up to Red, Green and Blue values, respectively, but we'll explore and confirm that later.  
+
+```{r}
+bluetarp.test.1 <- read.table('orthovnir067_ROI_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+Looking at the raw text file as well as the imported data, we have 10 features. Our raw data contains features for ID (really just a row number), as well as X and Y coordinates (given in two versions) and latitude and longitude. We don't need these. Our last three features are the "B1", "B2" and "B3" values and the ones we want to keep. Finally, since these are all blue tarps, we'll add a "isbluetarp" column like the one in our training data with everything labeled as "True".  
+
+```{r}
+bluetarp.test.1 <- subset(bluetarp.test.1, select = -c(V1, V2, V3, V4, V5, V6,
+                                                       V7))
+```
+
+```{r}
+bluetarp.test.1$isbluetarp <- 'True'
+```
+
+We have two more similar blue tarp files, so we'll repeat the process.  
+
+```{r}
+bluetarp.test.2 <- read.table('orthovnir069_ROI_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+bluetarp.test.2 <- subset(bluetarp.test.2, select = -c(V1, V2, V3, V4, V5, V6,
+                                                       V7))
+```
+
+```{r}
+bluetarp.test.2$isbluetarp <- 'True'
+```
+
+```{r}
+bluetarp.test.3 <- read.table('orthovnir078_ROI_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+bluetarp.test.3 <- subset(bluetarp.test.3, select = -c(V1, V2, V3, V4, V5, V6,
+                                                       V7))
+```
+
+```{r}
+bluetarp.test.3$isbluetarp <- 'True'
+```
+
+```{r}
+nrow(bluetarp.test.1) + nrow(bluetarp.test.2) + nrow(bluetarp.test.3)
+```
+
+So far we have 14480 blue tarp observations.  
+
+Now let's tackle the data containing the other objects. These are structured in the same way as our blue tarp files, so we'll read them in similarly but give the data sets a "False" label for the "isbluetarp" column.  
+
+```{r}
+notbluetarp.test.1 <- read.table('orthovnir057_ROI_NON_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+notbluetarp.test.1 <- subset(notbluetarp.test.1, select = -c(V1, V2, V3, V4, 
+                                                             V5, V6, V7))
+```
+
+```{r}
+notbluetarp.test.1$isbluetarp <- 'False'
+```
+
+```{r}
+notbluetarp.test.2 <- read.table('orthovnir067_ROI_NOT_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+notbluetarp.test.2 <- subset(notbluetarp.test.2, select = -c(V1, V2, V3, V4, 
+                                                             V5, V6, V7))
+```
+
+```{r}
+notbluetarp.test.2$isbluetarp <- 'False'
+```
+
+```{r}
+notbluetarp.test.3 <- read.table('orthovnir069_ROI_NOT_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+notbluetarp.test.3 <- subset(notbluetarp.test.3, select = -c(V1, V2, V3, V4, 
+                                                             V5, V6, V7))
+```
+
+```{r}
+notbluetarp.test.3$isbluetarp <- 'False'
+```
+
+```{r}
+notbluetarp.test.4 <- read.table('orthovnir078_ROI_NON_Blue_Tarps.txt',
+                              skip = 8)
+```
+
+```{r}
+notbluetarp.test.4 <- subset(notbluetarp.test.4, select = -c(V1, V2, V3, V4, 
+                                                             V5, V6, V7))
+```
+
+```{r}
+notbluetarp.test.4$isbluetarp <- 'False'
+```
+
+```{r}
+nrow(notbluetarp.test.1) + nrow(notbluetarp.test.2) + 
+  nrow(notbluetarp.test.3) + nrow(notbluetarp.test.4)
+```
+
+We have almost 2 million(!) observations of non blue tarp objects.
+
+Now, let's combine all the test data into one dataframe.  
+
+```{r}
+haiti.test <- rbind(bluetarp.test.1, bluetarp.test.2, bluetarp.test.3,
+                    notbluetarp.test.1, notbluetarp.test.2,
+                    notbluetarp.test.3, notbluetarp.test.4)
+```
+
+```{r}
+set.seed(710)
+
+haiti.test.rows_shuffled <- sample(nrow(haiti.test))
+haiti.test <- haiti.test[haiti.test.rows_shuffled, ]
+```
+
+```{r}
+nrow(haiti.test)
+```
+
+Our test set contains 2004177 observations(!).   
+
+```{r}
+14480 / 2004177
+```
+
+Blue tarps consist of less than 1% of our test data. This is a pretty big difference from our training set.  
+
+```{r, message = FALSE}
+haiti.test$isbluetarp <- as.factor(haiti.test$isbluetarp)
+```
+
+```{r}
+levels(haiti.test$isbluetarp)
+```
+
+```{r}
+haiti.test$isbluetarp <- factor(haiti.test$isbluetarp, 
+                           levels = c('True', 'False'))
+```
+
+```{r}
+levels(haiti.test$isbluetarp)
+```
+
+```{r}
+sum(is.na(haiti.test))
+```
+
+```{r}
+colnames(haiti.test)[colnames(haiti.test) == 'V8'] <- 'B1'
+colnames(haiti.test)[colnames(haiti.test) == 'V9'] <- 'B2'
+colnames(haiti.test)[colnames(haiti.test) == 'V10'] <- 'B3'
+```
+
+We still need to determine how the "B1", "B2" and "B3" values match up with Red, Green and Blue. The metadata in the raw text files for the test data each contains an entry regarding the ROI's (Region of Interest's) RGB value, suggesting an inherent order to the "B1", "B2" and "B3" features. Furthermore, RGB values are universally expressed in that order, so much so that RGB itself is a colloquialism for color models in general. Our raw data is also well curated and organized. It's likely that "B1", "B2" and "B3" match up with Red, Green and Blue, respectively, but we need further confirmation. Let's start by making boxplots of each feature for observations that are blue tarps. Since the blue tarps in the training data showed pretty distinct boxplots for Red, Green and Blue, this should give us a solid baseline for comparison.     
+
+```{r}
+filter(haiti.test, isbluetarp == 'True') %>%
+  ggplot(aes(x = isbluetarp, y = B1)) + 
+  geom_boxplot(col = 'dark red') +
+  labs(x = 'Blue Tarp', 
+       y = 'B1') + 
+  ggtitle('Box Plot of B1 Values for Blue Tarps (Test)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+filter(haiti.test, isbluetarp == 'True') %>%
+  ggplot(aes(x = isbluetarp, y = B2)) + 
+  geom_boxplot(col = 'dark green') +
+  labs(x = 'Blue Tarp', 
+       y = 'B2') + 
+  ggtitle('Box Plot of B2 Values for Blue Tarps (Test)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+filter(haiti.test, isbluetarp == 'True') %>%
+  ggplot(aes(x = isbluetarp, y = B3)) + 
+  geom_boxplot(col = 'dark blue') +
+  labs(x = 'Blue Tarp', 
+       y = 'B3') + 
+  ggtitle('Box Plot of B3 Values for Blue Tarps (Test)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+These test boxplots for blue tarps appear to be reasonable matches to the training boxplots. "B1" had a IQR and median that was less than "B2", which in turn was less than "B3". This follows the pattern from the training data, where Red's IQR and median was less than Green's IQR and median, which was then less than Blue's IQR and median. I think it's reasonable to relabel "B1" as Red, "B2" as Green and "B3" as Blue. 
+
+```{r}
+colnames(haiti.test)[colnames(haiti.test) == 'B1'] <- 'Red'
+colnames(haiti.test)[colnames(haiti.test) == 'B2'] <- 'Green'
+colnames(haiti.test)[colnames(haiti.test) == 'B3'] <- 'Blue'
+```
+
+Let's check out the distribution of Red, Green and Blue in our test data. Our test data has over 2 million rows, so we'll randomly sample 200000 observations for density plot. 
+
+```{r}
+set.seed(710)
+
+haiti.test[sample(nrow(haiti.test), 200000), ] %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+This is considerably different than our training data. We have a very high density of low Blue values.   
+
+```{r}
+set.seed(710)
+
+filter(haiti.test[sample(nrow(haiti.test), 200000), ], isbluetarp == 'True') %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB for Blue Tarps (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+set.seed(710)
+
+filter(haiti.test[sample(nrow(haiti.test), 200000), ], isbluetarp == 'False') %>%
+ggplot() + 
+  geom_density(aes(x = Red), color = 'Red') +
+  geom_density(aes(x = Green), color = 'Green') + 
+  geom_density(aes(x = Blue), color = 'Blue') + 
+  labs(x = 'Color Values', 
+       y = 'Density') + 
+  ggtitle('Density Plot of RGB for Other Objects (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+These also appear quite different than the ones from the training data, although the non blue tarp objects shared a very high density of low Blue values in both training and test data.  
+
+Finally, let's create some scatterplots with the test data like we did with the training data to see how separable the classes are. We'll again randomly sample 200000 observations for these.  
+
+```{r}
+set.seed(710)
+
+haiti.test[sample(nrow(haiti.test), 200000), ] %>%
+ggplot(aes(x = Red, y = Green)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Red Value', 
+       y = 'Green Value') + 
+  ggtitle('Scatter Plot of Green Values vs. Red Values (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+set.seed(710)
+
+haiti.test[sample(nrow(haiti.test), 200000), ] %>%
+ggplot(aes(x = Red, y = Blue)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Red Value', 
+       y = 'Blue Value') + 
+  ggtitle('Scatter Plot of Blue Values vs. Red Values (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+set.seed(710)
+
+haiti.test[sample(nrow(haiti.test), 200000), ] %>%
+ggplot(aes(x = Green, y = Blue)) + 
+  geom_point(aes(color = isbluetarp),
+             alpha = 0.3) +
+  scale_color_manual(values=c('Blue', 'Red')) + 
+  labs(x = 'Green Value', 
+       y = 'Blue Value') + 
+  ggtitle('Scatter Plot of Blue Values vs. Green Values (Test Sample 200k)') + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+These test data scatterplots reasonably resemble the training data scatterplots, but they're somewhat less separable (but still pretty separable overall).  
+
+Now that we have a solid grasp on the data, let's move on to model building.  
+
+
+## Model Building  
+
+For each of the models, I'll be focusing on two thresholds against predicted probabilities: the threshold that results in the maximum true positive rate (sensitivity) cross validated with training data; and the one that results in maximum accuracy cross validated with training data. I'll be evaluating a range of thresholds from 0.05 to 0.95 when fitting the model. The lower the threshold, the higher the sensitivity, so I suspect 0.05 to produce the highest sensitivity in our models. I could continuously lower the threshold to 0.01 and 0.001 and so forth to further maximize sensitivity. But I'm more interested in generally comparing performance between each model than pursuing an absolute ideal model, so a 0.05 threshold should do fine. 
+
+I'm interested in maximum sensitivity since it directly relates to the minimum false negative rate. If our ultimate goal is to potentially identify human survivors by identifying blue tarps, this means a false negative could lead to a stranded survivor — a devastating outcome. Thus, the threshold with the highest sensitivity would have the lowest false negative rate, minimizing these undesirable outcomes. 
+
+Conversely, I'm not so concerned about false positives, as the consequence of looking for survivors where we erroneously identified blue tarps isn't as grave as leaving potential survivors behind. This isn't free, though. Wasting time and resources on falsely identified blue tarps could lead to serious issues as well. But since I don't have context for who in particular would be using these models, I'll assume time and resources are less of a concern than maximizing life saving efforts. Maximum accuracy is less important to me in this context, but it's still an interesting indicator of general model performance, so I'll include it as well.   
+
+Regarding the data itself, I also don't see any compelling reason to normalize the values of "Red", "Green" and "Blue" (the values are all on the same scale) or to omit any these predictors/features since they're each essential in determining overall pixel color.     
+
+I'll be fitting each model with the same training controls in Caret, including cross-validation with 10 folds.          
+
+```{r}
+set.seed(710)
+
+trControl <- caret::trainControl(method = 'cv', 
+                                 number = 10,
+                                 savePredictions = TRUE,
+                                 classProbs = TRUE,
+                                 allowParallel = TRUE)
+```
+
+All training ROC curves and training AUC values will be plotted and calculated using out-of-fold predicted probabilities. I'll be creating the training ROC curves with this custom function. I'll be plotting these with about 2000 plot points to save resources.  
+
+```{r}
+draw_train_ROC <- function(model, title){
+train.predob_cv <- ROCR::prediction(model$pred$False, 
+                           model$pred$obs, 
+                           label.ordering = c('True', 'False'))
+train.roc_cv <- ROCR::performance(train.predob_cv, 
+                                  measure = 'tpr', 
+                                  x.measure = 'fpr')
+plot(train.roc_cv, 
+     colorize = T, 
+     print.cutoffs.at = c(0, 0.1, 0.9, 1.0),
+     downsampling = 0.035)
+title(main = title)
+lines(x = c(0,1), 
+      y = c(0,1), 
+      col = 'grey')}
+```
+
+I'll be creating the test ROC curves with this custom function. I'll also be plotting test ROC curves with about 2000 points to save resources.  
+
+```{r}
+draw_test_ROC <- function(preds, title){
+test.predob <- ROCR::prediction(preds$False, 
+                                  haiti.test$isbluetarp, 
+                                  label.ordering = c('True', 'False'))
+test.roc <- ROCR::performance(test.predob,
+                              measure='tpr', 
+                              x.measure='fpr')
+plot(test.roc, 
+     colorize = T, 
+     print.cutoffs.at = c(0, 0.1, 0.9, 1.0),
+     downsampling = 0.001)
+title(main = title)
+lines(x = c(0,1), 
+      y = c(0,1), 
+      col = 'grey')}
+```
+
+Training AUC values will be calculated using this custom function.  
+
+```{r}
+get_train_AUC <- function(model){
+predob_cv <- ROCR::prediction(model$pred$False, 
+                           model$pred$obs, 
+                           label.ordering = c('True', 'False'))
+
+train.auc <- performance(predob_cv, measure = "auc")
+train.auc <- train.auc@y.values[[1]]
+return(train.auc)
+}
+```
+
+Test AUC values will be calculated using this custom function.  
+
+```{r}
+get_test_AUC <- function(preds){
+predob <- ROCR::prediction(preds$False, 
+                          haiti.test$isbluetarp, 
+                          label.ordering = c('True', 'False'))
+
+test.auc <- performance(predob, measure = "auc")
+test.auc <- test.auc@y.values[[1]]
+return(test.auc)
+}
+```
+
+I'll also be creating confusion matrices with our test data using this custom function.  
+
+```{r}
+create_test_conf_matrix <- function(preds, thresh){
+  threshold.preds <- factor(
+  ifelse(preds[ , 'True'] > thresh, 'True', 'False'))
+
+threshold.preds <- relevel(threshold.preds,
+                                    'True')
+
+conf_matrix <- confusionMatrix(threshold.preds,
+                haiti.test$isbluetarp)
+
+return(conf_matrix)
+}
+```
+
+
+### Logistic Regression  
+
+#### Training  
+
+```{r}
+set.seed(710)
+
+logreg.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'glm',
+                           trControl = trControl)
+```
+
+```{r}
+results1.train.model <- c('Log Reg')
+results2.train.model <- c('Log Reg')
+```
+
+```{r}
+draw_train_ROC(logreg.fit, 'Log Reg ROC (Training)')
+```
+
+```{r}
+logreg.train.auc <- get_train_AUC(logreg.fit)
+logreg.train.auc
+```
+
+Our ROC curve tightly hugs the upper left corner and our AUC value is very close to 1. This model seems like a very good fit.  
+
+```{r}
+results1.train.auc <- c(logreg.train.auc)
+results2.train.auc <- c(logreg.train.auc)
+```
+
+```{r}
+logreg.train.threshold.stats <- caret::thresholder(logreg.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+logreg.train.threshold.stats$FNR <- (1 - 
+                                       logreg.train.threshold.stats$Sensitivity)
+logreg.train.threshold.stats$FPR <- (1 - 
+                                       logreg.train.threshold.stats$Specificity)
+```
+
+```{r}
+logreg.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits=3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+For the highest accuracy, I'll go with a threshold of 0.35 since it's the closest to 0.5. This accuracy of about 99.6% is quite good. As expected, 0.05 resulted in the highest sensitivity of about 97.6%. I would say this is pretty good, but we'll see how it compares as we build more models.  
+
+```{r}
+logreg.thresh1 <- 0.05
+logreg.thresh2 <- 0.35
+```
+
+```{r}
+results1.train.thresh <- c(logreg.thresh1)
+results2.train.thresh <- c(logreg.thresh2)
+
+results1.train.accuracy <- c(0.987)
+results1.train.sensitivity <- c(0.976)
+results1.train.fpr <- c(0.013)
+results1.train.precision <- c(0.717)
+
+results2.train.accuracy <- c(0.996)
+results2.train.sensitivity <- c(0.902)
+results2.train.fpr <- c(0.001)
+results2.train.precision <- c(0.955)
+```
+
+#### Testing
+
+```{r}
+results1.test.model <- c('Log Reg')
+results2.test.model <- c('Log Reg')
+```
+
+```{r}
+logreg.test.pred <- predict(logreg.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+draw_test_ROC(logreg.test.pred, 'Log Reg ROC (Test)')
+```
+
+```{r}
+logreg.test.auc <- get_test_AUC(logreg.test.pred)
+logreg.test.auc
+```
+
+
+Our ROC curve tightly hugs the upper left corner and our AUC value is very close to 1. This test AUC is greater than the training AUC, suggesting this model performs better on test data. This model seems to be performing very well on the holdout set.  
+
+```{r}
+results1.test.auc <- c(logreg.test.auc)
+results2.test.auc <- c(logreg.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(logreg.thresh1)
+results2.test.thresh <- c(logreg.thresh2)
+```
+
+When fitting this logistic regression model, I selected 0.05 as our threshold for maximum sensitivity and 0.35 as our threshold for maximum accuracy. Let's see how our model does with the test data at a 0.05 threshold and compare sensitivity. 
+
+```{r}
+logreg.test.conf_matrix1 <- create_test_conf_matrix(logreg.test.pred,
+                                                    logreg.thresh1)
+logreg.test.conf_matrix1
+```
+
+Our sensitivity is very high, almost 100%. Looking at the confusion matrix, there was only one false negative. This model had a higher sensitivity at the 0.05 threshold with the test data than the training data.  
+
+```{r}
+# FPR
+193475 / (193475 + 1796222)
+```
+
+```{r}
+# Precision
+14479 / (14479 + 193475)
+```
+
+```{r}
+results1.test.accuracy <- c(0.904)
+results1.test.sensitivity <- c(0.999)
+results1.test.fpr <- c(0.097)
+results1.test.precision <- c(0.069)
+```
+
+Now let's see how our model does with a threshold of 0.35 and compare accuracy.    
+
+```{r}
+logreg.test.conf_matrix2 <- create_test_conf_matrix(logreg.test.pred,
+                                                    logreg.thresh2)
+logreg.test.conf_matrix2
+```
+
+Our accuracy is about 98.1%, which isn't really great in the context of our data (blue tarps consist of less than 1% of our test data). This test accuracy is also worse than training accuracy, but that's to be expected.  
+
+```{r}
+# FPR
+38636 / (38636 + 1951061)
+```
+
+```{r}
+# Precision
+14356 / (14356 + 38636)
+```
+
+```{r}
+results2.test.accuracy <- c(0.981)
+results2.test.sensitivity <- c(0.991)
+results2.test.fpr <- c(0.019)
+results2.test.precision <- c(0.07)
+```
+
+Overall, I would say the logistic regression model did quite well with sensitivity but its accuracy was underwhelming.  
+
+
+### LDA  
+
+#### Training  
+
+```{r}
+set.seed(710)
+
+lda.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'lda',
+                           trControl = trControl)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'LDA')
+results2.train.model <- c(results2.train.model, 'LDA')
+```
+
+```{r}
+draw_train_ROC(lda.fit, 'LDA ROC (Training)')
+```
+
+```{r}
+lda.train.auc <- get_train_AUC(lda.fit)
+lda.train.auc
+```
+
+Our ROC curve does not tightly hug the upper left corner and our AUC value is relatively low. This model does not seem to be a great fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, lda.train.auc)
+results2.train.auc <- c(results2.train.auc, lda.train.auc)
+```
+
+```{r}
+lda.train.threshold.stats <- caret::thresholder(lda.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+lda.train.threshold.stats$FNR <- (1 - 
+                                    lda.train.threshold.stats$Sensitivity)
+lda.train.threshold.stats$FPR <- (1 - 
+                                    lda.train.threshold.stats$Specificity)
+```
+
+```{r}
+lda.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity of 86% was at the 0.05 threshold. Interestingly, our highest accuracy was actually at a threshold above 0.5, with a 98.5% accuracy at the 0.75 threshold (along with others, but we'll go with 0.75 since it's the closest to 0.5). Our accuracy at the 0.5 threshold is about 98.4%. This model does not seem like a good fit for the data.  
+
+```{r}
+lda.thresh1 <- 0.05
+lda.thresh2 <- 0.75
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, lda.thresh1)
+results2.train.thresh <- c(results2.train.thresh, lda.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.981)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.860)
+results1.train.fpr <- c(results1.train.fpr, 0.015)
+results1.train.precision <- c(results1.train.precision, 0.656)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.985)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.773)
+results2.train.fpr <- c(results2.train.fpr, 0.009)
+results2.train.precision <- c(results2.train.precision, 0.751)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'LDA')
+results2.test.model <- c(results2.test.model, 'LDA')
+```
+
+```{r}
+lda.test.pred <- predict(lda.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+draw_test_ROC(lda.test.pred, 'LDA ROC (Test)')
+```
+
+```{r}
+lda.test.auc <- get_test_AUC(lda.test.pred)
+lda.test.auc
+```
+
+Our test ROC curve looks a lot better than our training ROC curve, and our test AUC value is much improved. But the test ROC curve and test AUC values from our LDA model are worse than the ones from our logistic regression model.   
+
+```{r}
+results1.test.auc <- c(results1.test.auc, lda.test.auc)
+results2.test.auc <- c(results2.test.auc, lda.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, lda.thresh1)
+results2.test.thresh <- c(results2.test.thresh, lda.thresh2)
+```
+
+When fitting our LDA model, I selected 0.05 as our threshold for maximum sensitivity and 0.75 for maximum accuracy. Let's see how our model does with the test data at a 0.05 threshold.  
+
+```{r}
+lda.test.conf_matrix1 <- create_test_conf_matrix(lda.test.pred,
+                                                 lda.thresh1)
+lda.test.conf_matrix1
+```
+
+Our sensitivity at the 0.05 threshold is only about 92.1%. This is pretty low, especially compared to our logistic regression model, but it's an improvement over the training set performance.  
+
+```{r}
+# FPR
+47249 / (47249 + 1942448)
+```
+
+```{r}
+# Precision
+13342 / (13342 + 47249)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.976)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.921)
+results1.test.fpr <- c(results1.test.fpr, 0.024)
+results1.test.precision <- c(results1.test.precision, 0.22)
+```
+
+Now let's check out the model at a 0.75 threshold for maximum accuracy.  
+
+```{r}
+lda.test.conf_matrix2 <- create_test_conf_matrix(lda.test.pred,
+                                                 lda.thresh2)
+lda.test.conf_matrix2
+```
+
+Our model's accuracy at the 0.75 threshold is about 98.3%, slightly worse than our accuracy at this threshold with the training data.
+
+```{r}
+# FPR
+31016 / (31016 + 1958681)
+```
+
+```{r}
+# Precision
+11449 / (11449 + 31016)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.983)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.791)
+results2.test.fpr <- c(results2.test.fpr, 0.016)
+results2.test.precision <- c(results2.test.precision, 0.27)
+```
+
+I don't think the LDA model performed well in either training or test data. Its sensitivity and accuracy performance with test data were lacking. This isn't unusual since our data wasn't quite linearly separable, but it's interesting that the logistic regression solidly outperformed it (at least in my opinion).   
+
+
+### QDA  
+
+#### Training
+
+```{r}
+set.seed(710)
+
+qda.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'qda',
+                           trControl = trControl)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'QDA')
+results2.train.model <- c(results2.train.model, 'QDA')
+```
+
+```{r}
+draw_train_ROC(qda.fit, 'QDA ROC (Training)')
+```
+
+```{r}
+qda.train.auc <- get_train_AUC(qda.fit)
+qda.train.auc
+```
+
+Our training ROC curve is somewhat strangely shaped, not unlike the LDA training ROC curve, but it hugs the upper left corner more closely than the LDA curve. Our AUC is very close to 1. This model seems like a better fit than the LDA (which was expected) and a good fit overall.    
+
+```{r}
+results1.train.auc <- c(results1.train.auc, qda.train.auc)
+results2.train.auc <- c(results2.train.auc, qda.train.auc)
+```
+
+```{r}
+qda.train.threshold.stats <- caret::thresholder(qda.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+qda.train.threshold.stats$FNR <- (1 - 
+                                    qda.train.threshold.stats$Sensitivity)
+qda.train.threshold.stats$FPR <- (1 - 
+                                    qda.train.threshold.stats$Specificity)
+```
+
+```{r}
+qda.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity was about 94.2% at the 0.05 threshold. Our highest accuracy was about 99.5% at the 0.5 threshold (I'll go with this over the other eligible thresholds since it's at the 0.5 threshold). Both of these metrics are improved from the LDA model but worse than the Logistic Regression model.  
+
+```{r}
+qda.thresh1 <- 0.05
+qda.thresh2 <- 0.5
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, qda.thresh1)
+results2.train.thresh <- c(results2.train.thresh, qda.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.988)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.942)
+results1.train.fpr <- c(results1.train.fpr, 0.010)
+results1.train.precision <- c(results1.train.precision, 0.755)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.995)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.841)
+results2.train.fpr <- c(results2.train.fpr, 0.000)
+results2.train.precision <- c(results2.train.precision, 0.989)
+```
+
+#### Testing
+
+```{r}
+results1.test.model <- c(results1.test.model, 'QDA')
+results2.test.model <- c(results2.test.model, 'QDA')
+```
+
+```{r}
+qda.test.pred <- predict(qda.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+draw_test_ROC(qda.test.pred, 'QDA ROC (Test)')
+```
+
+```{r}
+qda.test.auc <- get_test_AUC(qda.test.pred)
+qda.test.auc
+```
+
+The test ROC curve doesn't look bad but the test AUC value is actually less than ones for our previous models. Although this QDA model fit the training data pretty well, it seems like it's performing less well on the test data.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, qda.test.auc)
+results2.test.auc <- c(results2.test.auc, qda.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, qda.thresh1)
+results2.test.thresh <- c(results2.test.thresh, qda.thresh2)
+```
+
+When fitting our QDA model, I selected 0.05 as the threshold for maximum sensitivity and 0.5 as the threshold for maximum accuracy. Let's see how our model performs at the 0.05 threshold.  
+
+```{r}
+qda.test.conf_matrix1 <- create_test_conf_matrix(qda.test.pred,
+                                                 qda.thresh1)
+qda.test.conf_matrix1
+```
+
+Our model's sensitivity at the 0.05 threshold is about 87%. This is quite poor, especially compared to our previous models.  
+
+```{r}
+# FPR
+44390 / (44390 + 1945307)
+```
+
+```{r}
+# Precision 
+12598 / (12598 + 44390)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.977)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.870)
+results1.test.fpr <- c(results1.test.fpr, 0.022)
+results1.test.precision <- c(results1.test.precision, 0.221)
+```
+
+Now let's see how our model does at the 0.5 threshold.  
+
+```{r}
+qda.test.conf_matrix2 <- create_test_conf_matrix(qda.test.pred,
+                                                 qda.thresh2)
+qda.test.conf_matrix2
+```
+
+Our accuracy is at about 99.6%. This greatly outperforms both our previous models. This isn't surprising, considering the data in the EDA looked somewhat, but not quite, linearly separable and our previous models created linear decision boundaries.  
+
+```{r}
+# FPR
+3651 / (3651 + 1986046)
+```
+
+```{r}
+# Precision
+10058 / (10058 + 3651)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.996)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.695)
+results2.test.fpr <- c(results2.test.fpr, 0.002)
+results2.test.precision <- c(results2.test.precision, 0.733)
+```
+
+For our primary metric, sensitivity, the QDA model performed (very) poorly. But it had strong accuracy with the test data, especially compared to the other models, so it certainly has some merit.  
+
+
+### KNN  
+
+#### Training  
+
+Let's first evaluate a wide range of potential $k$ neighbors values to help find a potentially optimal one, or at least a good starting point. I'll start by evaluating $k$ values from 1 to 30. Our data is very dense and the classes appeared quite distinct in our earlier visualizations, so I don't expect the optimal $k$ value to be very large.  
+
+```{r}
+set.seed(710)
+
+tuneGrid = expand.grid(k = 1:30)
+
+knn.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'knn',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'KNN')
+results2.train.model <- c(results2.train.model, 'KNN')
+```
+
+```{r}
+knn.fit
+```
+
+It looks like our best $k$ value is 5.  
+
+```{r}
+results.params.model <- c('KNN')
+results.params.param <- c('K')
+results.params.value <- c(5)
+```
+
+```{r}
+draw_train_ROC(knn.fit, 'KNN ROC (Training)')
+```
+
+```{r}
+knn.train.auc <- get_train_AUC(knn.fit)
+knn.train.auc
+```
+
+The ROC curve tightly hugs the upper left corner and the AUC value is very close to 1 (although not quite as close as the Logistic Regression's test AUC). This model seems like a very good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, knn.train.auc)
+results2.train.auc <- c(results2.train.auc, knn.train.auc)
+```
+
+```{r}
+knn.train.threshold.stats <- caret::thresholder(knn.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+knn.train.threshold.stats$FNR <- (1 - 
+                                    knn.train.threshold.stats$Sensitivity)
+knn.train.threshold.stats$FPR <- (1 - 
+                                    knn.train.threshold.stats$Specificity)
+```
+
+```{r}
+knn.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity is at the 0.05 threshold while our best accuracy is at various thresholds, but I'll go with 0.5. This sensitivity and accuracy both seem pretty good overall (or maybe the last couple of models were so poor that this performance looks strong in comparison).   
+
+```{r}
+knn.thresh1 <- 0.05
+knn.thresh2 <- 0.5
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, knn.thresh1)
+results2.train.thresh <- c(results2.train.thresh, knn.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.992)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.996)
+results1.train.fpr <- c(results1.train.fpr, 0.008)
+results1.train.precision <- c(results1.train.precision, 0.797)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.997)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.958)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.957)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'KNN')
+results2.test.model <- c(results2.test.model, 'KNN')
+```
+
+```{r}
+knn.test.pred <- predict(knn.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+# this results in an esoteric error that I couldn't debug
+
+# draw_test_ROC(knn.test.pred, 'KNN ROC (Test)')
+```
+
+```{r}
+knn.test.auc <- get_test_AUC(knn.test.pred)
+knn.test.auc
+```
+
+I unfortunately had technical issues drawing the test ROC curve for the KNN model, but the AUC value is very low. There's a huge discrepancy between the training and test AUC values. Despite not having the ROC curve, I think this AUC value is enough to show that this model is not performing well on the test data.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, knn.test.auc)
+results2.test.auc <- c(results2.test.auc, knn.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, knn.thresh1)
+results2.test.thresh <- c(results2.test.thresh, knn.thresh2)
+```
+
+When fitting our KNN model, I selected 0.05 as the threshold for maximum sensitivity and 0.5 as the threshold for maximum accuracy. Let's see how our model performs at the 0.05 threshold.  
+
+```{r}
+knn.test.conf_matrix1 <- create_test_conf_matrix(knn.test.pred,
+                                                 knn.thresh1)
+knn.test.conf_matrix1
+```
+
+Our sensitivity at the 0.05 threshold is about 90.6%, which is not good.  
+
+```{r}
+# FPR
+45850 / (45850 + 1943847)
+```
+
+```{r}
+# Precision 
+13115 / (13115 + 45850)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.976)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.906)
+results1.test.fpr <- c(results1.test.fpr, 0.023)
+results1.test.precision <- c(results1.test.precision, 0.222)
+```
+
+Now let's see how our model does at the 0.5 threshold.  
+
+```{r}
+knn.test.conf_matrix2 <- create_test_conf_matrix(knn.test.pred,
+                                                 knn.thresh2)
+knn.test.conf_matrix2
+```
+
+Our accuracy at the 0.5 threshold was about 99.2%, which seems pretty strong overall (at least compared to our previous models).  
+
+```{r}
+# FPR
+12544 / (12544 + 1977153)
+```
+
+```{r}
+# Precision 
+11816 / (11816 + 12544)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.992)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.816)
+results2.test.fpr <- c(results2.test.fpr, 0.006)
+results2.test.precision <- c(results2.test.precision, 0.485)
+```
+
+Overall, this model had underwhelming sensitivity but had pretty impressive accuracy. It's not the best for our primary metric but still seems like a useful model.  
+
+
+### Penalized Logistic Regression — Ridge  
+
+#### Training  
+
+```{r}
+set.seed(710)
+
+lambdas <- 10 ^ seq(-4, 2, 0.2)
+tuneGrid <- expand.grid(alpha = 0, 
+                        lambda = lambdas)
+
+ridge.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'glmnet',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'Ridge')
+results2.train.model <- c(results2.train.model, 'Ridge')
+```
+
+```{r}
+ridge.fit$bestTune$lambda
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'Ridge')
+results.params.param <- c(results.params.param, 'lambda')
+results.params.value <- c(results.params.value, 0.004)
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'Ridge')
+results.params.param <- c(results.params.param, 'alpha')
+results.params.value <- c(results.params.value, 0)
+```
+
+```{r}
+draw_train_ROC(ridge.fit, 'Ridge ROC (Train)')
+```
+
+```{r}
+ridge.train.auc <- get_train_AUC(ridge.fit)
+ridge.train.auc
+```
+
+This ROC curve and AUC value are abysmal. Even after tuning, our Ridge Regression seems like a very poor fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, ridge.train.auc)
+results2.train.auc <- c(results2.train.auc, ridge.train.auc)
+```
+
+```{r}
+ridge.train.threshold.stats <- caret::thresholder(ridge.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+ridge.train.threshold.stats$FNR <- (1 - 
+                                    ridge.train.threshold.stats$Sensitivity)
+ridge.train.threshold.stats$FPR <- (1 - 
+                                    ridge.train.threshold.stats$Specificity)
+```
+```{r}
+ridge.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity is found at the 0.05 threshold while our best accuracy is found at the 0.25 threshold. Both seem not great compared to what we've seen from our models thus far.  
+
+```{r}
+ridge.thresh1 <- 0.05
+ridge.thresh2 <- 0.25
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, ridge.thresh1)
+results2.train.thresh <- c(results2.train.thresh, ridge.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.917)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.895)
+results1.train.fpr <- c(results1.train.fpr, 0.083)
+results1.train.precision <- c(results1.train.precision, 0.264)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.987)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.582)
+results2.train.fpr <- c(results2.train.fpr, 0.000)
+results2.train.precision <- c(results2.train.precision, 0.999)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'Ridge')
+results2.test.model <- c(results2.test.model, 'Ridge')
+```
+
+```{r}
+ridge.test.pred <- predict(ridge.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+draw_test_ROC(ridge.test.pred, 'Ridge ROC (Test)')
+```
+
+```{r}
+ridge.test.auc <- get_test_AUC(ridge.test.pred)
+ridge.test.auc
+```
+
+This ROC curve pretty closely hugs the upper left corner and AUC is pretty close to 1. Overall, I wouldn't say this is particularly good compared to some of our other models, but this is a massive improvement over the training set performance (and somewhat of a surprise).  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, ridge.test.auc)
+results2.test.auc <- c(results2.test.auc, ridge.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, ridge.thresh1)
+results2.test.thresh <- c(results2.test.thresh, ridge.thresh2)
+```
+
+I selected 0.05 as the threshold for maximum sensitivity and 0.25 as the threshold for maximum accuracy when fitting our model. Let's see how our it performs at the 0.05 threshold.  
+
+```{r}
+ridge.test.conf_matrix1 <- create_test_conf_matrix(ridge.test.pred,
+                                                 ridge.thresh1)
+ridge.test.conf_matrix1
+```
+
+Our sensitivity at the 0.05 threshold is about 95.7%. I wouldn't say this is good overall, but compared to our training results, this is surprisingly high.  
+
+```{r}
+# FPR
+99224 / (99224 + 1890473)
+```
+
+```{r}
+# Precision 
+13860 / (13860 + 99224)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.950)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.957)
+results1.test.fpr <- c(results1.test.fpr, 0.050)
+results1.test.precision <- c(results1.test.precision, 0.123)
+```
+
+Now let's see how the model does at the 0.25 threshold.  
+
+```{r}
+ridge.test.conf_matrix2 <- create_test_conf_matrix(ridge.test.pred,
+                                                 ridge.thresh2)
+ridge.test.conf_matrix2
+```
+
+Our accuracy of 99.6% is quite good, among the best of our models. This is surprising, considering how the model performed with the training data.  
+
+```{r}
+# FPR
+529 / (529 + 1989168)
+```
+
+```{r}
+# Precision 
+7036 / (7036 + 529)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.996)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.486)
+results2.test.fpr <- c(results2.test.fpr, 0.000)
+results2.test.precision <- c(results2.test.precision, 0.930)
+```
+
+This model had unusual behavior: it performed very poorly with training data but performed surprisingly well with test data. Our highest sensitivity was still not great, but our best accuracy was unexpectedly high.  
+
+
+### Penalized Logistic Regression (Lasso)  
+
+#### Training  
+
+```{r}
+set.seed(710)
+
+lambdas <- 10 ^ seq(-4, 2, 0.2)
+tuneGrid <- expand.grid(alpha = 1, 
+                        lambda = lambdas)
+
+lasso.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'glmnet',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'Lasso')
+results2.train.model <- c(results2.train.model, 'Lasso')
+```
+
+```{r}
+lasso.fit$bestTune$lambda
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'Lasso')
+results.params.param <- c(results.params.param, 'lambda')
+results.params.value <- c(results.params.value, 0.0001)
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'Lasso')
+results.params.param <- c(results.params.param, 'alpha')
+results.params.value <- c(results.params.value, 1)
+```
+
+```{r}
+draw_train_ROC(lasso.fit, 'Lasso ROC (Train)')
+```
+
+```{r}
+lasso.train.auc <- get_train_AUC(lasso.fit)
+lasso.train.auc
+```
+
+This ROC curve and AUC value are dismal. Even after tuning, our Lasso Regression doesn't seem like a good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, lasso.train.auc)
+results2.train.auc <- c(results2.train.auc, lasso.train.auc)
+```
+
+```{r}
+lasso.train.threshold.stats <- caret::thresholder(lasso.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+lasso.train.threshold.stats$FNR <- (1 - 
+                                    lasso.train.threshold.stats$Sensitivity)
+lasso.train.threshold.stats$FPR <- (1 - 
+                                    lasso.train.threshold.stats$Specificity)
+```
+
+```{r}
+lasso.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity is at the 0.05 threshold while our highest accuracy is at many thresholds, but I'll pick 0.5. This is actually pretty good and not what I expected, given our ROC curve and AUC value.  
+
+```{r}
+lasso.thresh1 <- 0.05
+lasso.thresh2 <- 0.5
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, lasso.thresh1)
+results2.train.thresh <- c(results2.train.thresh, lasso.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.987)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.979)
+results1.train.fpr <- c(results1.train.fpr, 0.013)
+results1.train.precision <- c(results1.train.precision, 0.717)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.995)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.867)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.976)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'Lasso')
+results2.test.model <- c(results2.test.model, 'Lasso')
+```
+
+```{r}
+lasso.test.pred <- predict(lasso.fit, haiti.test, type = 'prob')
+```
+
+```{r}
+draw_test_ROC(lasso.test.pred, 'Lasso ROC (Test)')
+```
+
+```{r}
+lasso.test.auc <- get_test_AUC(lasso.test.pred)
+lasso.test.auc
+```
+
+This ROC curve very tightly hugs the upper left corner and our AUC value is extremely close to 1. Our model seems to perform very well on the test data, despite the low training AUC value and poor training ROC curve.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, lasso.test.auc)
+results2.test.auc <- c(results2.test.auc, lasso.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, lasso.thresh1)
+results2.test.thresh <- c(results2.test.thresh, lasso.thresh2)
+```
+
+Let's see how our model does at our chosen 0.05 threshold for highest sensitivity.  
+
+```{r}
+lasso.test.conf_matrix1 <- create_test_conf_matrix(lasso.test.pred,
+                                                 lasso.thresh1)
+lasso.test.conf_matrix1
+```
+
+Our model predicted zero false negatives and had a sensitivity of 1! This is our best model thus far regarding sensitivity.  
+
+```{r}
+# FPR
+189006 / (189006  + 1800691)
+```
+
+```{r}
+# Precision 
+14480 / (14480 + 189006)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.906)
+results1.test.sensitivity <- c(results1.test.sensitivity, 1.000)
+results1.test.fpr <- c(results1.test.fpr, 0.095)
+results1.test.precision <- c(results1.test.precision, 0.071)
+```
+
+Now let's see how our model does at the 0.5 threshold for maximum accuracy.  
+
+```{r}
+lasso.test.conf_matrix2 <- create_test_conf_matrix(lasso.test.pred,
+                                                 lasso.thresh2)
+lasso.test.conf_matrix2
+```
+
+Our accuracy of almost 99.6% is very good compared to our other models so far, another surprising result!    
+
+```{r}
+# FPR
+8988 / (8988  + 1980709)
+```
+
+```{r}
+# Precision 
+14249 / (14249 + 8988)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.996)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.984)
+results2.test.fpr <- c(results2.test.fpr, 0.005)
+results2.test.precision <- c(results2.test.precision, 0.613)
+```
+
+This model was our best so far. Like our Ridge Regression, our Lasso Regression performed much better with the test data than with the training data. The test sensitivity and test accuracy at our selected thresholds were both impressive, especially considering how poor of a fit the model seemed with the training data.  
+
+
+### Random Forest  
+
+#### Training  
+
+Let's first tune our random forest for the best value of mtry, which dictates how many features each tree in our random forest will consider, and how many trees our random forest model should have.  
+
+```{r}
+rf.list <- list()
+
+for (ntree in c(50, 100, 150, 200, 250, 300, 350, 400)){
+  set.seed(710)
+  
+  rf.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'rf',
+                           ntree = ntree,
+                           trControl = trControl,
+                           tuneGrid = data.frame(mtry = c(1 : 3)))
+  
+  rf.list.key <- toString(ntree)
+  rf.list[[rf.list.key]] <- rf.fit
+}
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'RF')
+results2.train.model <- c(results2.train.model, 'RF')
+```
+
+```{r}
+rf.list
+```
+
+All of our models selected 1 as the best value for mtry. Considering the accuracy of each random forest, I'll go with 300 trees. Although it doesn't have the absolute highest accuracy among our random forests, it's still very close to the highest accuracy, lies in a stable region among accuracy values and is a reasonably large (but not too large) choice for the size of the random forest.  
+
+```{r}
+set.seed(710)
+
+rf.fit.tuned <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'rf',
+                           ntree = 300,
+                           trControl = trControl,
+                           tuneGrid = data.frame(mtry = 1))
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'RF')
+results.params.param <- c(results.params.param, 'mtry')
+results.params.value <- c(results.params.value, 1)
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'RF')
+results.params.param <- c(results.params.param, 'ntrees')
+results.params.value <- c(results.params.value, 300)
+```
+
+```{r}
+draw_train_ROC(rf.fit, 'Random Forest ROC (Train)')
+```
+
+```{r}
+rf.train.auc <- get_train_AUC(rf.fit)
+rf.train.auc
+```
+
+This ROC curve very tightly hugs the upper left corner and our AUC value is very close to 1. This model seems like a good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, rf.train.auc)
+results2.train.auc <- c(results2.train.auc, rf.train.auc)
+```
+
+```{r}
+rf.train.threshold.stats <- caret::thresholder(rf.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+rf.train.threshold.stats$FNR <- (1 - 
+                                    rf.train.threshold.stats$Sensitivity)
+rf.train.threshold.stats$FPR <- (1 - 
+                                    rf.train.threshold.stats$Specificity)
+```
+
+```{r}
+rf.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our highest sensitivity was at the 0.05 threshold and our highest accuracy was at many thresholds, but we'll go with 0.5. Our model did well with training data.  
+
+```{r}
+rf.thresh1 <- 0.05
+rf.thresh2 <- 0.5
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, rf.thresh1)
+results2.train.thresh <- c(results2.train.thresh, rf.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.988)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.998)
+results1.train.fpr <- c(results1.train.fpr, 0.012)
+results1.train.precision <- c(results1.train.precision, 0.736)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.997)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.945)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.962)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'RF')
+results2.test.model <- c(results2.test.model, 'RF')
+```
+
+```{r}
+rf.test.pred <- predict(rf.fit.tuned, haiti.test, type = 'prob')
+```
+
+```{r}
+# this also results in an esoteric error that I couldn't debug
+
+# draw_test_ROC(rf.test.pred, 'Random Forest ROC (Test)')
+```
+
+```{r}
+rf.test.auc <- get_test_AUC(rf.test.pred)
+rf.test.auc
+```
+
+Unfortunately, I had technical issues with drawing the test ROC curve for this model, but our test AUC value is lower than our training AUC. This isn't bad but it's not too promising.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, rf.test.auc)
+results2.test.auc <- c(results2.test.auc, rf.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, rf.thresh1)
+results2.test.thresh <- c(results2.test.thresh, rf.thresh2)
+```
+
+Let's see how our model does at our chosen 0.05 threshold for highest sensitivity.  
+
+```{r}
+rf.test.conf_matrix1 <- create_test_conf_matrix(rf.test.pred,
+                                                 rf.thresh1)
+rf.test.conf_matrix1
+```
+
+Our sensitivity of about 96.8% isn't the worst we've seen but doesn't compare to our best models either.  
+
+```{r}
+# FPR
+67794 / (67794 + 1921903)
+```
+
+```{r}
+# Precision 
+14016 / (14016 + 67794)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.966)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.968)
+results1.test.fpr <- c(results1.test.fpr, 0.034)
+results1.test.precision <- c(results1.test.precision, 0.171)
+```
+
+Now let's see how our model does at the 0.5 threshold for maximum accuracy.  
+
+```{r}
+rf.test.conf_matrix2 <- create_test_conf_matrix(rf.test.pred,
+                                                 rf.thresh2)
+rf.test.conf_matrix2
+```
+
+Our accuracy of about 99.5% is very good compared to our other models.  
+
+```{r}
+# FPR
+7203 / (7203 + 1982494)
+```
+
+```{r}
+# Precision 
+11190 / (11190 + 7203)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.995)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.773)
+results2.test.fpr <- c(results2.test.fpr, 0.004)
+results2.test.precision <- c(results2.test.precision, 0.608)
+```
+
+Overall, I think model proved useful, but its sensitivity wasn't as good as our best models.  
+
+
+### SVM — Linear Kernel  
+
+#### Training  
+
+Let's tune for our cost parameter, C. 
+
+```{r}
+set.seed(710)
+
+tuneGrid <- expand.grid(C = c(0.01, 0.1, 1, 10, 100))
+
+svm_linear.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'svmLinear',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'SVM — L')
+results2.train.model <- c(results2.train.model, 'SVM — L')
+```
+
+```{r}
+svm_linear.fit
+```
+
+Our optimal value of C was 10.  
+
+```{r}
+results.params.model <- c(results.params.model, 'SVM — L')
+results.params.param <- c(results.params.param, 'C')
+results.params.value <- c(results.params.value, 10)
+```
+
+```{r}
+draw_train_ROC(svm_linear.fit, 'SVM — Linear ROC (Train)')
+```
+
+```{r}
+svm_linear.train.auc <- get_train_AUC(svm_linear.fit)
+svm_linear.train.auc
+```
+
+This ROC curve tightly hugs the upper left corner and our AUC value is very close to 1. This model seems like a very good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, svm_linear.train.auc)
+results2.train.auc <- c(results2.train.auc, svm_linear.train.auc)
+```
+
+```{r}
+svm_linear.train.threshold.stats <- caret::thresholder(svm_linear.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+svm_linear.train.threshold.stats$FNR <- (1 - 
+                                  svm_linear.train.threshold.stats$Sensitivity)
+svm_linear.train.threshold.stats$FPR <- (1 - 
+                                  svm_linear.train.threshold.stats$Specificity)
+```
+
+```{r}
+svm_linear.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our threshold for highest sensitivity is 0.05. Among the thresholds with highest accuracy, I'll go with 0.4 since it's the closest to 0.5. The accuracy at 0.4 is pretty impressive while the sensitivity at 0.05 seems decent, but not great.  
+
+```{r}
+svm_linear.thresh1 <- 0.05
+svm_linear.thresh2 <- 0.4
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, svm_linear.thresh1)
+results2.train.thresh <- c(results2.train.thresh, svm_linear.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.984)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.974)
+results1.train.fpr <- c(results1.train.fpr, 0.016)
+results1.train.precision <- c(results1.train.precision, 0.668)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.996)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.898)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.960)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'SVM - Linear')
+results2.test.model <- c(results2.test.model, 'SVM — Linear')
+```
+
+```{r}
+svm_linear.test.pred <- predict(svm_linear.fit, 
+                                haiti.test, 
+                                type = 'prob')
+```
+
+```{r}
+draw_test_ROC(svm_linear.test.pred, 'SVM — Linear ROC (Test)')
+```
+
+```{r}
+svm_linear.test.auc <- get_test_AUC(svm_linear.test.pred)
+svm_linear.test.auc
+```
+
+This ROC curve pretty tightly hugs the upper left corner and our AUC value is very close to 1. This model seems to be performing well.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, svm_linear.test.auc)
+results2.test.auc <- c(results2.test.auc, svm_linear.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, svm_linear.thresh1)
+results2.test.thresh <- c(results2.test.thresh, svm_linear.thresh2)
+```
+
+Let's see how our model does at our chosen 0.05 threshold for highest sensitivity.  
+
+```{r}
+svm_linear.test.conf_matrix1 <- create_test_conf_matrix(
+  svm_linear.test.pred, svm_linear.thresh1)
+svm_linear.test.conf_matrix1
+```
+
+Our sensitivity with this model is extremely close to 1. This is our best model yet for this metric!   
+
+```{r}
+# FPR
+214620 / (214620 + 1775077)
+```
+
+```{r}
+# Precision
+14479 / (14479 + 214620)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.893)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.999)
+results1.test.fpr <- c(results1.test.fpr, 0.108)
+results1.test.precision <- c(results1.test.precision, 0.063)
+```
+
+Now let's see how our model does at the 0.4 threshold for maximum accuracy.  
+
+```{r}
+svm_linear.test.conf_matrix2 <- create_test_conf_matrix(
+  svm_linear.test.pred, svm_linear.thresh2)
+svm_linear.test.conf_matrix2
+```
+
+Our accuracy is about 97.5%, which is pretty underwhelming compared to our other models. Interestingly, our sensitivity at this threshold is still quite high.   
+
+```{r}
+# FPR
+50244 / (50244 + 1939453)
+```
+
+```{r}
+# Precision
+14341 / (14341 + 50244)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.975)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.990)
+results2.test.fpr <- c(results2.test.fpr, 0.025)
+results2.test.precision <- c(results2.test.precision, 0.222)
+```
+
+This model performed very well regarding sensitivity but was underwhelming for accuracy.  
+
+
+### SVM — Polynomial Kernel  
+
+#### Training  
+
+Let's tune for cost (C) and which degree of polynomial kernel. I chose 1 for the scale parameter because according to the documentation for the kernlab and caret packages on parsnip, the default value for the scale is 1.  
+
+```{r}
+set.seed(710)
+
+tuneGrid <- expand.grid(degree = c(2, 3, 4, 5),
+                        scale = 1,
+                        C = c(0.01, 0.1, 1, 10, 100))
+
+svm_poly.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'svmPoly',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'SVM — P')
+results2.train.model <- c(results2.train.model, 'SVM — P')
+```
+
+```{r}
+svm_poly.fit
+```
+
+Our tuned degree was 5 and our tuned cost was 100.  
+
+```{r}
+results.params.model <- c(results.params.model, 'SVM — P')
+results.params.param <- c(results.params.param, 'C')
+results.params.value <- c(results.params.value, 100)
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'SVM — P')
+results.params.param <- c(results.params.param, 'degree')
+results.params.value <- c(results.params.value, 5)
+```
+
+```{r}
+draw_train_ROC(svm_poly.fit, 'SVM — Poly ROC (Train)')
+```
+
+```{r}
+svm_poly.train.auc <- get_train_AUC(svm_poly.fit)
+svm_poly.train.auc
+```
+
+This ROC curve tightly hugs the upper left corner and our AUC value is very close to 1. This model seems like a good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, svm_poly.train.auc)
+results2.train.auc <- c(results2.train.auc, svm_poly.train.auc)
+```
+
+```{r}
+svm_poly.train.threshold.stats <- caret::thresholder(svm_poly.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+svm_poly.train.threshold.stats$FNR <- (1 - 
+                                  svm_poly.train.threshold.stats$Sensitivity)
+svm_poly.train.threshold.stats$FPR <- (1 - 
+                                  svm_poly.train.threshold.stats$Specificity)
+```
+
+```{r}
+svm_poly.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+Our threshold for best sensitivity is 0.05. I'll go with 0.5 as our threshold for best accuracy. Our sensitivity at 0.05 and accuracy at 0.5 both seem fairly good compared to our other models.  
+
+```{r}
+svm_poly.thresh1 <- 0.05
+svm_poly.thresh2 <- 0.5
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, svm_poly.thresh1)
+results2.train.thresh <- c(results2.train.thresh, svm_poly.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.989)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.987)
+results1.train.fpr <- c(results1.train.fpr, 0.011)
+results1.train.precision <- c(results1.train.precision, 0.773)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.997)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.935)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.973)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'SVM - Poly')
+results2.test.model <- c(results2.test.model, 'SVM — Poly')
+```
+
+```{r}
+svm_poly.test.pred <- predict(svm_poly.fit, 
+                              haiti.test, 
+                              type = 'prob')
+```
+
+```{r}
+draw_test_ROC(svm_poly.test.pred, 'SVM — Poly ROC (Test)')
+```
+
+```{r}
+svm_poly.test.auc <- get_test_AUC(svm_poly.test.pred)
+svm_poly.test.auc
+```
+
+This ROC curve and AUC value are quite poor. Although this model seemed like a good fit, it's not looking great with the test data.    
+
+```{r}
+results1.test.auc <- c(results1.test.auc, svm_poly.test.auc)
+results2.test.auc <- c(results2.test.auc, svm_poly.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, svm_poly.thresh1)
+results2.test.thresh <- c(results2.test.thresh, svm_poly.thresh2)
+```
+
+Let's see how our model does at our chosen 0.05 threshold for highest sensitivity.  
+
+```{r}
+svm_poly.test.conf_matrix1 <- create_test_conf_matrix(
+  svm_poly.test.pred, svm_poly.thresh1)
+svm_poly.test.conf_matrix1
+```
+
+The sensitivity at our 0.05 threshold is very poor, but interestingly, the accuracy is pretty high. Still, it's not a good result.   
+
+```{r}
+# FPR
+47883 / (47883 + 1941814)
+```
+
+```{r}
+# Precision
+8278 / (8278 + 47883)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.973)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.572)
+results1.test.fpr <- c(results1.test.fpr, 0.024)
+results1.test.precision <- c(results1.test.precision, 0.147)
+```
+
+Now, let's see how our model does at our chosen 0.5 threshold for highest accuracy.  
+
+```{r}
+svm_poly.test.conf_matrix2 <- create_test_conf_matrix(
+  svm_poly.test.pred, svm_poly.thresh2)
+svm_poly.test.conf_matrix2
+```
+
+Our accuracy isn't too bad, but it's not great overall. Given how accurate the model was at the 0.05 threshold, I expected better at the 0.5 threshold.  
+
+```{r}
+# FPR
+11976 / (11976 + 1977721)
+```
+
+```{r}
+# Precision
+7876 / (7876 + 11976)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.991)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.544)
+results2.test.fpr <- c(results2.test.fpr, 0.006)
+results2.test.precision <- c(results2.test.precision, 0.397)
+```
+
+This model seemed like a good fit but performed disappointingly with the test data. It did quite poorly with our primary metric, sensitivity, and its accuracy was unimpressive.  
+
+
+### SVM — Radial Kernel  
+
+#### Training  
+
+Let's start by tuning for our sigma and cost (C) parameters.  
+
+```{r}
+set.seed(710)
+
+tuneGrid <- expand.grid(sigma = c(0.1, 1, 10), 
+                        C = c(0.01, 0.1, 1, 10, 100))
+
+svm_radial.fit <- caret::train(isbluetarp ~ Red + Green + Blue,
+                           data = haiti.train,
+                           method = 'svmRadial',
+                           trControl = trControl,
+                           tuneGrid = tuneGrid)
+```
+
+```{r}
+results1.train.model <- c(results1.train.model, 'SVM — R')
+results2.train.model <- c(results2.train.model, 'SVM — R')
+```
+
+```{r}
+svm_radial.fit
+```
+
+Our tuned values of sigma and C are 10 and 100, respectively.  
+
+```{r}
+results.params.model <- c(results.params.model, 'SVM — R')
+results.params.param <- c(results.params.param, 'C')
+results.params.value <- c(results.params.value, 100)
+```
+
+```{r}
+results.params.model <- c(results.params.model, 'SVM — R')
+results.params.param <- c(results.params.param, 'sigma')
+results.params.value <- c(results.params.value, 10)
+```
+
+```{r}
+draw_train_ROC(svm_radial.fit, 'SVM — Radial ROC (Train)')
+```
+
+```{r}
+svm_radial.train.auc <- get_train_AUC(svm_radial.fit)
+svm_radial.train.auc
+```
+
+This ROC curve tightly hugs the upper left corner and our AUC value is close to 1. This model seems like a good fit.  
+
+```{r}
+results1.train.auc <- c(results1.train.auc, svm_radial.train.auc)
+results2.train.auc <- c(results2.train.auc, svm_radial.train.auc)
+```
+
+```{r}
+svm_radial.train.threshold.stats <- caret::thresholder(svm_radial.fit, 
+                         threshold = seq(0.05, 0.95, by = 0.05),
+                         statistics = "all")
+
+svm_radial.train.threshold.stats$FNR <- (1 - 
+                                  svm_radial.train.threshold.stats$Sensitivity)
+svm_radial.train.threshold.stats$FPR <- (1 - 
+                                  svm_radial.train.threshold.stats$Specificity)
+```
+
+```{r}
+svm_radial.train.threshold.stats %>% 
+  select("prob_threshold", "Accuracy", "Sensitivity", "Precision",
+         "FNR", "FPR") %>%
+  knitr::kable(digits = 3) %>%
+  kableExtra::kable_styling(full_width = FALSE,
+                            latex_options = "HOLD_position")
+```
+
+A threshold of 0.05 has our highest sensitivity and a threshold of 0.25 has our highest accuracy.  
+
+```{r}
+svm_radial.thresh1 <- 0.05
+svm_radial.thresh2 <- 0.25
+```
+
+```{r}
+results1.train.thresh <- c(results1.train.thresh, svm_radial.thresh1)
+results2.train.thresh <- c(results2.train.thresh, svm_radial.thresh2)
+
+results1.train.accuracy <- c(results1.train.accuracy, 0.997)
+results1.train.sensitivity <- c(results1.train.sensitivity, 0.976)
+results1.train.fpr <- c(results1.train.fpr, 0.002)
+results1.train.precision <- c(results1.train.precision, 0.942)
+
+results2.train.accuracy <- c(results2.train.accuracy, 0.998)
+results2.train.sensitivity <- c(results2.train.sensitivity, 0.965)
+results2.train.fpr <- c(results2.train.fpr, 0.001)
+results2.train.precision <- c(results2.train.precision, 0.957)
+```
+
+#### Testing  
+
+```{r}
+results1.test.model <- c(results1.test.model, 'SVM - R')
+results2.test.model <- c(results2.test.model, 'SVM — R')
+```
+
+```{r}
+svm_radial.test.pred <- predict(svm_radial.fit, 
+                                haiti.test, 
+                                type = 'prob')
+```
+
+```{r}
+draw_test_ROC(svm_radial.test.pred, 'SVM — Radial ROC (Test)')
+```
+
+```{r}
+svm_radial.test.auc <- get_test_AUC(svm_radial.test.pred)
+svm_radial.test.auc
+```
+
+This ROC curve has a bizarre shape but its AUC value, while relatively low, isn't the worst we've seen among our models.  
+
+```{r}
+results1.test.auc <- c(results1.test.auc, svm_radial.test.auc)
+results2.test.auc <- c(results2.test.auc, svm_radial.test.auc)
+```
+
+```{r}
+results1.test.thresh <- c(results1.test.thresh, svm_radial.thresh1)
+results2.test.thresh <- c(results2.test.thresh, svm_radial.thresh2)
+```
+
+Let's see how our model does at our chosen 0.05 threshold for highest sensitivity.  
+
+```{r}
+svm_radial.test.conf_matrix1 <- create_test_conf_matrix(
+  svm_radial.test.pred, svm_radial.thresh1)
+svm_radial.test.conf_matrix1
+```
+
+Our sensitivity is quite poor.     
+
+```{r}
+# FPR
+18427 / (18427 + 1971270)
+```
+
+```{r}
+# Precision
+9585 / (9585 + 18427)
+```
+
+```{r}
+results1.test.accuracy <- c(results1.test.accuracy, 0.988)
+results1.test.sensitivity <- c(results1.test.sensitivity, 0.662)
+results1.test.fpr <- c(results1.test.fpr, 0.009)
+results1.test.precision <- c(results1.test.precision, 0.342)
+```
+
+Now, let's see how our model does at our chosen 0.5 threshold for highest accuracy.  
+
+```{r}
+svm_radial.test.conf_matrix2 <- create_test_conf_matrix(
+  svm_radial.test.pred, svm_radial.thresh2)
+svm_radial.test.conf_matrix2
+```
+
+Our accuracy isn't too poor but it's also not good.   
+
+```{r}
+# FPR
+14046 / (14046 + 1975651)
+```
+
+```{r}
+# Precision
+7905 / (7905 + 14046)
+```
+
+```{r}
+results2.test.accuracy <- c(results2.test.accuracy, 0.990)
+results2.test.sensitivity <- c(results2.test.sensitivity, 0.546)
+results2.test.fpr <- c(results2.test.fpr, 0.007)
+results2.test.precision <- c(results2.test.precision, 0.360)
+```
+
+Overall, this model was sub-par. Our sensitivity was bad and our accuracy was decent, at best.  
+
+
+## Results  
+
+### Training Results  
+
+Here are our *training results* at the ideal threshold *for sensitivity*.  
+
+```{r}
+train.results.1 <- data.frame(
+  results1.train.model,
+  results1.train.thresh,
+  round(results1.train.auc, 3),
+  results1.train.accuracy,
+  results1.train.sensitivity,
+  results1.train.fpr,
+  results1.train.precision
+)
+
+colnames(train.results.1) <- c('Model',
+                               'Threshold',
+                               'AUC Value',
+                               'Accuracy',
+                               'Sensitivity',
+                               'False Positive Rate',
+                               'Precision')
+```
+
+```{r}
+knitr::kable(train.results.1, 'simple')
+```
+
+Here are our *training results* at the ideal threshold *for accuracy*.  
+
+```{r}
+train.results.2 <- data.frame(
+  results2.train.model,
+  results2.train.thresh,
+  round(results2.train.auc, 3),
+  results2.train.accuracy,
+  results2.train.sensitivity,
+  results2.train.fpr,
+  results2.train.precision
+)
+
+colnames(train.results.2) <- c('Model',
+                               'Threshold',
+                               'AUC Value',
+                               'Accuracy',
+                               'Sensitivity',
+                               'False Positive Rate',
+                               'Precision')
+```
+
+```{r}
+knitr::kable(train.results.2, 'simple')
+```
+
+Here are our *final parameters* for the models that needed *tuning*.  
+
+```{r}
+param.results <- data.frame(
+  results.params.model,
+  results.params.param,
+  results.params.value
+)
+
+colnames(param.results) <- c('Model',
+                             'Parameter',
+                             'Value')
+```
+
+```{r}
+knitr::kable(param.results, 'simple')
+```
+
+Here are our *training ROC curves*.  
+
+```{r}
+draw_train_ROC(logreg.fit, 'Log Reg ROC (Train)')
+draw_train_ROC(lda.fit, 'LDA ROC (Train)')
+draw_train_ROC(qda.fit, 'QDA ROC (Train)')
+draw_train_ROC(knn.fit, 'KNN ROC (Train)')
+draw_train_ROC(ridge.fit, 'Ridge ROC (Train)')
+draw_train_ROC(lasso.fit, 'Lasso ROC (Train)')
+draw_train_ROC(rf.fit, 'RF ROC (Train)')
+draw_train_ROC(svm_linear.fit, 'SVM — Linear ROC (Train)')
+draw_train_ROC(svm_poly.fit, 'SVM — Poly ROC (Train)')
+draw_train_ROC(svm_radial.fit, 'SVM — Radial ROC (Train)')
+```
+
+
+### Testing Results  
+
+Here are our *test results* at the ideal threshold *for sensitivity*.    
+
+```{r}
+test.results.1 <- data.frame(
+  results1.test.model,
+  results1.test.thresh,
+  round(results1.test.auc, 3),
+  results1.test.accuracy,
+  results1.test.sensitivity,
+  results1.test.fpr,
+  results1.test.precision
+)
+
+colnames(test.results.1) <- c('Model',
+                               'Threshold',
+                               'AUC Value',
+                               'Accuracy',
+                               'Sensitivity',
+                               'False Positive Rate',
+                               'Precision')
+```
+
+```{r}
+knitr::kable(test.results.1, 'simple')
+```
+
+Here are our *test results* at the ideal threshold *for accuracy*.    
+
+```{r}
+test.results.2 <- data.frame(
+  results2.test.model,
+  results2.test.thresh,
+  round(results2.test.auc, 3),
+  results2.test.accuracy,
+  results2.test.sensitivity,
+  results2.test.fpr,
+  results2.test.precision
+)
+
+colnames(test.results.2) <- c('Model',
+                               'Threshold',
+                               'AUC Value',
+                               'Accuracy',
+                               'Sensitivity',
+                               'False Positive Rate',
+                               'Precision')
+```
+
+```{r}
+knitr::kable(test.results.2, 'simple')
+```
+
+Here are our *test ROC curves*. The ROC curves for the KNN and Random Forest models are omitted due to technical issues.  
+
+```{r}
+draw_test_ROC(logreg.test.pred, 'Log Reg ROC (Test)')
+draw_test_ROC(lda.test.pred, 'LDA ROC (Test)')
+draw_test_ROC(qda.test.pred, 'QDA ROC (Test)')
+draw_test_ROC(ridge.test.pred, 'Ridge ROC (Test)')
+draw_test_ROC(lasso.test.pred, 'Lasso ROC (Test)')
+draw_test_ROC(svm_linear.test.pred, 'SVM — Linear ROC (Test)')
+draw_test_ROC(svm_poly.test.pred, 'SVM — Poly ROC (Test)')
+draw_test_ROC(svm_radial.test.pred, 'SVM — Radial ROC (Test)')
+```
+
+
+## Conclusions  
+
+*And the winner is...* Lasso! This model had the best test performance regarding sensitivity at the 0.05 threshold among all our models, hitting a sensitivity of 1 while actually making predictions (as in, the model didn't just predict everything as one class). It also tied for the best accuracy at our chosen thresholds for accuracy. It performed very well overall on both our metrics, particularly with our main metric in sensitivity, and didn't take long to train or test. It was surprising to see because it had the worst training ROC curve and AUC value among our models. I suspect that our test data isn't well represented by our training data and the Lasso model, being parameterized, had good flexibility when dealing with the test data. My main hangup with this model is the massive discrepancy between training fit and test performance, which gives me pause in applying this model to different data sets. But in my opinion, it's the winner in this context considering both our metrics of interest.       
+
+*But is there really a winner?* Although our Lasso model did well on our chosen metrics, if we had different goals, our target model might change. In this scenario, I prioritized sensitivity with the idea that if our objective is to identify potential survivors through identifying blue tarps, then a false negative could have dire consequences — human suffering or death. But this can be resource intensive. An organization like FEMA might be able to afford these costs, but what about, say, a non-profit organization aiding in relief efforts? Their priorities might be different given their limitations, so they might focus on a model with maximum accuracy to limit waste and ensure the best allocation of their resources, and they would probably want to avoid a model that takes a very long time to train and test. 
+
+I also explored thresholds for maximum accuracy because accuracy seems like a better metric for general comparison between models, especially lacking the context of a particular scenario or problem. Although the Lasso did well in this regard too, I would also consider the Ridge, QDA and Random Forest models. The QDA and Random Forest models showed more consistency between their training fit and test performance, especially with accuracy, so they might instill more faith in different use cases. But really, it comes down to your particular problem, and there are valid reasons to prefer other performance metrics depending on context.    
+
+*The model that best fit the training data was...* Random Forest! With 300 trees in the random forest, each tree only having to make one decision and using only one feature to make that decision, our Random Forest model was very simple due to the data set having only two classes and three features. It had the highest sensitivity and second highest accuracy with our training data, had a relatively high accuracy with test data, but an underwhelming sensitivity with the test data. 
+
+The KNN model seemed promising in an earlier version of this project, where we fit some of these models to training data but didn't test them. But after fitting more models, it fell in the rankings considering both training sensitivity and training accuracy. Our SVM models also fit the training data well regarding accuracy, but they were somewhat disappointing with their performance on the test set. Plus, I found other annoying drawbacks with them, which we'll get to later.  
+
+*The best models in training weren't the best models in testing.* Lasso, in my opinion, was our best model with the test data but it seemed like the worst fit among our models with its terribly shaped ROC curve and weak AUC value. It then beat or matched metrics with other models like Logistic Regression, QDA, KNN and the SVM's that looked promising in the training data. Ridge Regression also showed a similar pattern in that it did much better on the test set than its training ROC curve and AUC value would suggest. As mentioned before, I suspect this is because the test data isn't well represented by the training data (we can sort of see this in the EDA section with the IQR differences in the RGB boxplots in the training and test sets), but I expected SVM's in particular to be more flexible and have better accuracy with the test data.  
+
+I was pleasantly surprised by how well Logistic Regression did, considering it was the most basic model. Since the test set was so large, I expected the more flexible models to perform better overall, but this wasn't the case. It might be that it's easy to over-tune and over-fit the more flexible models to the training data.   
+
+*Computation and run time really matter.* I've never dealt with data sets this large, so this was my first experience with some long run times in training some of these models, and I even had to limit the ranges of some tuning parameters to ease the computational burden on my machine. The Random Forest model took a while to tune (maybe about 15 minutes), mainly because I looped through different numbers of trees. It performed pretty well on the test set, with relatively high sensitivity and accuracy, though it wasn't the best by either metric. 
+
+The SVM models took even longer to train, each probably taking 20+ minutes, and would sometimes fail if I expanded my tuning grid too much. And ultimately, although they fit the training data well (especially regarding accuracy), they didn't beat out other models with their test data performance. The Linear Kernel SVM did well with sensitivity, though, coming in second after the Lasso, but it was also inferior in accuracy compared to the Lasso. The other SVM kernels did poorly regarding sensitivity with the test set but had alright accuracy, though far from our best models. It just doesn't seem to be worth all that time and computational effort for those disappointing results (although, to be fair, we wouldn't have known unless we tested them!).   
+
+*I think these models seem pretty effective in relief efforts (with some caveats).* Now we've seen how our models do with a large test data set with over 2 million observations, I have more faith that these models would be effective in relief efforts. The logic of associating blue tarps with potential survivors is sound and our best models appear effective in identifying them among the other objects in our pictures. But really, how big is 2 million observations? Our data also includes three reference images, two that are 831 pixels by 636 pixels and one that is 965 pixels by 826 pixels. These pictures individually contain 528516 pixels and 797090 pixels, respectively. These three pictures combined contain 1854122 total pixels. Our models are really only identifying individual pixels as blue tarps or non blue tarp objects. Taking a step back, that means our models have been tested on about 3.5 images' worth of pixels — not really that large of a data set in the big picture. Is this enough? I'm not totally sure, but the test set doesn't seem trivial, we've seen differences in how the models performed in training and testing, and our best models' results were strong, so I think these models would be effective in relief efforts. It certainly beats us humans searching through thousands of images a day.  
